@@ -1,4 +1,8 @@
 ---
+Comment: |
+  Current versions of Docker Desktop may not install correctly in unattented environments.
+  Due to recent changes to Docker, the postinstall will check for the logged_in_user
+  and may not install correctly if there is no user logged in.
 Description: Downloads the latest version of Docker and creates a package.
 Identifier: com.github.smithjw.pkg.Docker
 ParentRecipe: com.github.smithjw.download.Docker
@@ -39,27 +43,38 @@ Process:
         # https://github.com/autopkg/chilcote-recipes/blob/master/Docker/Docker.munki.recipe
         # https://github.com/docker/for-mac/issues/2359
         # https://macadmins.slack.com/archives/C056155B4/p1716206699338559
+        # https://macadmins.slack.com/archives/C056155B4/p1717624187018149
 
         logged_in_user=$( scutil <<< "show State:/Users/ConsoleUser" | awk '/Name :/ && ! /loginwindow/ { print $3 }' )
-        declare -r docker_bundle_dir=/Applications/Docker.app/Contents
-        declare -r privtools=/Library/PrivilegedHelperTools
-        declare -r usr_local_bin=/usr/local/bin
+        echo "logged_in_user: $logged_in_user"
+        docker_daemons=(
+          "com.docker.socket"
+          "com.docker.vmnetd"
+        )
 
-        /usr/bin/hdiutil attach "Docker-%ARCHITECTURE%-%version%.dmg" -mountpoint "/Volumes/Docker-%version%" -nobrowse
-
-        if [[ -e /Library/LaunchDaemons/com.docker.vmnetd.plist ]] ; then
-          /bin/launchctl unload /Library/LaunchDaemons/com.docker.vmnetd.plist
-        fi
-
-        "/Volumes/Docker-%version%/Docker.app/Contents/MacOS/install" --accept-license --user "${logged_in_user}"
-
-        [[ ! -d ${usr_local_bin} ]] && /bin/mkdir -p ${usr_local_bin} ; /bin/chmod 1755 ${usr_local_bin}
-        [[ ! -d ${privtools} ]] && /bin/mkdir -p ${privtools} ; /bin/chmod 1755 ${privtools}
-
-        for tool in docker docker-compose docker-diagnose docker-machine notary; do
-          /bin/ln -sf ${docker_bundle_dir}/Resources/bin/${tool} /usr/local/bin
+        for daemon in "${docker_daemons[@]}"; do
+          if /bin/launchctl print "system/${daemon}" >/dev/null 2>&1; then
+            echo "bootout: ${daemon}"
+            /bin/launchctl bootout "system/${daemon}"
+          fi
         done
 
+        echo "Attaching Docker-%ARCHITECTURE%-%version%.dmg"
+        /usr/bin/hdiutil attach "Docker-%ARCHITECTURE%-%version%.dmg" -mountpoint "/Volumes/Docker-%version%" -nobrowse
+
+        if [[ -z "$logged_in_user" ]] || [[ "$logged_in_user" =~ (loginwindow|_mbsetupuser|root) ]]; then
+          echo "User not logged in, running: /Volumes/Docker-%version%/Docker.app/Contents/MacOS/install --accept-license"
+          "/Volumes/Docker-%version%/Docker.app/Contents/MacOS/install" --accept-license
+        else
+          echo "User logged in, running:"
+          echo "  - '/Volumes/Docker-%version%/Docker.app/Contents/MacOS/install config --user ${logged_in_user}'"
+          "/Volumes/Docker-%version%/Docker.app/Contents/MacOS/install" config --user "${logged_in_user}"
+
+          echo "  - '/Volumes/Docker-%version%/Docker.app/Contents/MacOS/install --accept-license --user ${logged_in_user}'"
+          "/Volumes/Docker-%version%/Docker.app/Contents/MacOS/install" --accept-license --user "${logged_in_user}"
+        fi
+
+        echo "Detatching /Volumes/Docker-%version%"
         /usr/bin/hdiutil detach "/Volumes/Docker-%version%"
 
         exit 0
